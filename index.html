@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Directory Brute-Forcer</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        textarea, input, select, button { width: 100%; padding: 10px; margin: 5px 0; }
+        button { background: #4CAF50; color: white; border: none; cursor: pointer; }
+        #results { margin-top: 20px; }
+        .found { color: green; }
+        .error { color: red; }
+        .loading { color: blue; }
+        #progress-bar { width: 100%; background: #f3f3f3; margin: 10px 0; }
+        #progress { height: 20px; background: #4CAF50; width: 0%; }
+        .wordlist-option { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Advanced Directory Brute-Forcer</h1>
+    <p>Enter a domain and select a wordlist:</p>
+
+    <input type="text" id="domain" placeholder="example.com" />
+    
+    <div class="wordlist-option">
+        <label>Select Wordlist:</label>
+        <select id="wordlist-select">
+            <option value="custom">Custom Wordlist</option>
+            <option value="common">Common Paths (admin, backup, etc.)</option>
+            <option value="content_discovery">Full Content Discovery List</option>
+        </select>
+    </div>
+    
+    <textarea id="wordlist" rows="10" placeholder="Enter custom wordlist (one per line)"></textarea>
+    
+    <label>Delay (ms) between requests:</label>
+    <input type="number" id="delay" value="500" min="100" max="5000">
+    
+    <button onclick="startScan()">Start Scan</button>
+    <button onclick="exportResults()" id="export-btn" disabled>Export Results</button>
+    
+    <div id="progress-bar"><div id="progress"></div></div>
+    <div id="status"></div>
+    <div id="results"></div>
+
+    <script>
+        // Predefined wordlists
+        const wordlists = {
+            common: ["admin", "backup", "config.php", ".git", "wp-login.php"],
+            content_discovery: [
+                "admin", "backup", ".env", "wp-admin", "phpinfo.php",
+                "cgi-bin/", "debug.log", "database.sql", "uploads/",
+                // ... (add more from content_discovery_for_all.txt)
+            ]
+        };
+
+        let foundPaths = [];
+        let isScanning = false;
+
+        async function startScan() {
+            if (isScanning) {
+                alert("Scan already in progress!");
+                return;
+            }
+
+            const domain = document.getElementById('domain').value.trim();
+            const wordlistType = document.getElementById('wordlist-select').value;
+            const delay = parseInt(document.getElementById('delay').value) || 500;
+            
+            let wordlist = [];
+            
+            if (wordlistType === "custom") {
+                const customWords = document.getElementById('wordlist').value.trim();
+                if (!customWords) {
+                    alert("Please enter a custom wordlist!");
+                    return;
+                }
+                wordlist = customWords.split('\n').filter(word => word.trim() !== '');
+            } else {
+                wordlist = [...wordlists[wordlistType]];
+            }
+
+            if (!domain) {
+                alert("Please enter a domain!");
+                return;
+            }
+
+            isScanning = true;
+            document.getElementById('export-btn').disabled = true;
+            foundPaths = [];
+            
+            const resultsDiv = document.getElementById('results');
+            const statusDiv = document.getElementById('status');
+            const progressBar = document.getElementById('progress');
+            
+            resultsDiv.innerHTML = "";
+            statusDiv.innerHTML = `<p class="loading">Scanning ${wordlist.length} paths...</p>`;
+            
+            let checked = 0;
+            let foundCount = 0;
+
+            for (const word of wordlist) {
+                if (!isScanning) break; // Allow stopping
+                
+                const url = `https://${domain}/${word}`;
+                try {
+                    const response = await fetch(url, { method: 'HEAD', mode: 'no-cors' });
+                    
+                    if (response.ok || response.status === 0) {
+                        resultsDiv.innerHTML += `<p class="found">[200] ${url}</p>`;
+                        foundPaths.push(url);
+                        foundCount++;
+                    }
+                } catch (error) {
+                    // Ignore errors (CORS/network issues)
+                }
+                
+                checked++;
+                const progressPercent = (checked / wordlist.length) * 100;
+                progressBar.style.width = `${progressPercent}%`;
+                statusDiv.innerHTML = `<p class="loading">Checked: ${checked}/${wordlist.length} | Found: ${foundCount}</p>`;
+                
+                await new Promise(resolve => setTimeout(resolve, delay)); // Rate-limiting
+            }
+
+            statusDiv.innerHTML += `<p>Scan completed! ${foundCount} paths found.</p>`;
+            document.getElementById('export-btn').disabled = false;
+            isScanning = false;
+        }
+
+        function exportResults() {
+            if (foundPaths.length === 0) {
+                alert("No results to export!");
+                return;
+            }
+            
+            const blob = new Blob([foundPaths.join('\n')], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `bruteforce_results_${document.getElementById('domain').value}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
