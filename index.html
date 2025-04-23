@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advanced Directory Brute-Forcer</title>
+    <title>Accurate Directory Brute-Forcer</title>
     <style>
         body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
         textarea, input, select, button { width: 100%; padding: 10px; margin: 5px 0; }
@@ -15,10 +15,11 @@
         #progress-bar { width: 100%; background: #f3f3f3; margin: 10px 0; }
         #progress { height: 20px; background: #4CAF50; width: 0%; }
         .wordlist-option { margin: 10px 0; }
+        #stop-scan { background: #f44336; }
     </style>
 </head>
 <body>
-    <h1>Advanced Directory Brute-Forcer</h1>
+    <h1>Accurate Directory Brute-Forcer (Dirb-style)</h1>
     <p>Enter a domain and select a wordlist:</p>
 
     <input type="text" id="domain" placeholder="example.com" />
@@ -35,9 +36,10 @@
     <textarea id="wordlist" rows="10" placeholder="Enter custom wordlist (one per line)"></textarea>
     
     <label>Delay (ms) between requests:</label>
-    <input type="number" id="delay" value="500" min="100" max="5000">
+    <input type="number" id="delay" value="300" min="100" max="5000">
     
     <button onclick="startScan()">Start Scan</button>
+    <button onclick="stopScan()" id="stop-scan">Stop Scan</button>
     <button onclick="exportResults()" id="export-btn" disabled>Export Results</button>
     
     <div id="progress-bar"><div id="progress"></div></div>
@@ -47,16 +49,48 @@
     <script>
         // Predefined wordlists
         const wordlists = {
-            common: ["admin", "backup", "config.php", ".git", "wp-login.php"],
+            common: ["admin", "backup", "config.php", ".git", "wp-login.php", "robots.txt"],
             content_discovery: [
-                "admin", "backup", ".env", "wp-admin", "phpinfo.php",
-                "cgi-bin/", "debug.log", "database.sql", "uploads/",
-                // ... (add more from content_discovery_for_all.txt)
+                "admin/", "backup/", "config/", "database/", "logs/",
+                "wp-admin/", "wp-content/", "wp-includes/", "wp-config.php",
+                ".env", ".git/", ".svn/", ".htaccess", "phpinfo.php",
+                "cgi-bin/", "test/", "temp/", "upload/", "includes/"
             ]
         };
 
         let foundPaths = [];
         let isScanning = false;
+        let abortController = new AbortController();
+
+        async function checkUrl(url) {
+            try {
+                // First try HEAD request (faster)
+                const headResponse = await fetch(url, {
+                    method: 'HEAD',
+                    signal: abortController.signal
+                });
+                
+                if (headResponse.ok) {
+                    // If HEAD works, verify with GET
+                    const getResponse = await fetch(url, {
+                        signal: abortController.signal
+                    });
+                    
+                    if (getResponse.ok) {
+                        return {
+                            status: getResponse.status,
+                            size: getResponse.headers.get('content-length') || 'Unknown',
+                            url: url
+                        };
+                    }
+                }
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error("Error checking:", url, error);
+                }
+            }
+            return null;
+        }
 
         async function startScan() {
             if (isScanning) {
@@ -66,7 +100,7 @@
 
             const domain = document.getElementById('domain').value.trim();
             const wordlistType = document.getElementById('wordlist-select').value;
-            const delay = parseInt(document.getElementById('delay').value) || 500;
+            const delay = parseInt(document.getElementById('delay').value) || 300;
             
             let wordlist = [];
             
@@ -87,6 +121,7 @@
             }
 
             isScanning = true;
+            abortController = new AbortController();
             document.getElementById('export-btn').disabled = true;
             foundPaths = [];
             
@@ -96,24 +131,39 @@
             
             resultsDiv.innerHTML = "";
             statusDiv.innerHTML = `<p class="loading">Scanning ${wordlist.length} paths...</p>`;
+            progressBar.style.width = "0%";
             
             let checked = 0;
             let foundCount = 0;
 
+            // First check base domain to verify connectivity
+            try {
+                const baseCheck = await fetch(`https://${domain}`, {
+                    signal: abortController.signal
+                });
+                if (!baseCheck.ok) {
+                    statusDiv.innerHTML = `<p class="error">Base domain returned ${baseCheck.status}. Scan may not work.</p>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<p class="error">Cannot connect to ${domain}. Check domain/network.</p>`;
+                isScanning = false;
+                return;
+            }
+
             for (const word of wordlist) {
-                if (!isScanning) break; // Allow stopping
+                if (!isScanning) break;
                 
-                const url = `https://${domain}/${word}`;
-                try {
-                    const response = await fetch(url, { method: 'HEAD', mode: 'no-cors' });
-                    
-                    if (response.ok || response.status === 0) {
-                        resultsDiv.innerHTML += `<p class="found">[200] ${url}</p>`;
-                        foundPaths.push(url);
-                        foundCount++;
-                    }
-                } catch (error) {
-                    // Ignore errors (CORS/network issues)
+                const url = `https://${domain}/${word.replace(/^\//, '')}`;
+                const result = await checkUrl(url);
+                
+                if (result) {
+                    resultsDiv.innerHTML += `
+                        <p class="found">
+                            [${result.status}] ${result.url} 
+                            <span style="color: #666">(${result.size} bytes)</span>
+                        </p>`;
+                    foundPaths.push(`${result.status} ${result.url} (${result.size} bytes)`);
+                    foundCount++;
                 }
                 
                 checked++;
@@ -121,12 +171,22 @@
                 progressBar.style.width = `${progressPercent}%`;
                 statusDiv.innerHTML = `<p class="loading">Checked: ${checked}/${wordlist.length} | Found: ${foundCount}</p>`;
                 
-                await new Promise(resolve => setTimeout(resolve, delay)); // Rate-limiting
+                if (delay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
             }
 
-            statusDiv.innerHTML += `<p>Scan completed! ${foundCount} paths found.</p>`;
+            statusDiv.innerHTML += `<p>Scan completed! ${foundCount} valid paths found.</p>`;
             document.getElementById('export-btn').disabled = false;
             isScanning = false;
+        }
+
+        function stopScan() {
+            if (isScanning) {
+                abortController.abort();
+                isScanning = false;
+                document.getElementById('status').innerHTML += `<p class="error">Scan stopped by user.</p>`;
+            }
         }
 
         function exportResults() {
@@ -139,7 +199,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `bruteforce_results_${document.getElementById('domain').value}.txt`;
+            a.download = `dirb_results_${document.getElementById('domain').value}.txt`;
             a.click();
             URL.revokeObjectURL(url);
         }
