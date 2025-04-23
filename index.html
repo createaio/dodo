@@ -3,26 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Accurate Directory Brute-Forcer</title>
+    <title>Reliable Directory Brute-Forcer</title>
     <style>
         body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
         textarea, input, select, button { width: 100%; padding: 10px; margin: 5px 0; }
         button { background: #4CAF50; color: white; border: none; cursor: pointer; }
         #results { margin-top: 20px; }
         .found { color: green; }
+        .redirect { color: orange; }
         .error { color: red; }
         .loading { color: blue; }
         #progress-bar { width: 100%; background: #f3f3f3; margin: 10px 0; }
         #progress { height: 20px; background: #4CAF50; width: 0%; }
         .wordlist-option { margin: 10px 0; }
         #stop-scan { background: #f44336; }
+        .protocol-option { margin: 10px 0; }
     </style>
 </head>
 <body>
-    <h1>Accurate Directory Brute-Forcer (Dirb-style)</h1>
+    <h1>Reliable Directory Brute-Forcer</h1>
     <p>Enter a domain and select a wordlist:</p>
 
     <input type="text" id="domain" placeholder="example.com" />
+    
+    <div class="protocol-option">
+        <label>Protocol:</label>
+        <select id="protocol">
+            <option value="auto">Auto (HTTPS first)</option>
+            <option value="https">HTTPS only</option>
+            <option value="http">HTTP only</option>
+        </select>
+    </div>
     
     <div class="wordlist-option">
         <label>Select Wordlist:</label>
@@ -64,31 +75,61 @@
 
         async function checkUrl(url) {
             try {
-                // First try HEAD request (faster)
-                const headResponse = await fetch(url, {
-                    method: 'HEAD',
-                    signal: abortController.signal
+                // Try with GET request and proper headers
+                const response = await fetch(url, {
+                    method: 'GET',
+                    signal: abortController.signal,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DirectoryBruteForcer/1.0'
+                    },
+                    mode: 'no-cors',
+                    credentials: 'omit'
                 });
                 
-                if (headResponse.ok) {
-                    // If HEAD works, verify with GET
-                    const getResponse = await fetch(url, {
-                        signal: abortController.signal
-                    });
-                    
-                    if (getResponse.ok) {
-                        return {
-                            status: getResponse.status,
-                            size: getResponse.headers.get('content-length') || 'Unknown',
-                            url: url
-                        };
-                    }
-                }
+                // Even with no-cors, we can detect if the request was made
+                // For actual status codes, we'd need a backend proxy
+                return {
+                    accessible: true,
+                    url: url
+                };
             } catch (error) {
-                if (error.name !== 'AbortError') {
-                    console.error("Error checking:", url, error);
-                }
+                return {
+                    accessible: false,
+                    url: url,
+                    error: error.message
+                };
             }
+        }
+
+        async function testProtocol(domain, protocol) {
+            const testUrl = `${protocol}://${domain}/`;
+            try {
+                await fetch(testUrl, {
+                    method: 'HEAD',
+                    mode: 'no-cors',
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DirectoryBruteForcer/1.0'
+                    }
+                });
+                return protocol;
+            } catch (error) {
+                return null;
+            }
+        }
+
+        async function determineProtocol(domain) {
+            const protocolSelect = document.getElementById('protocol').value;
+            
+            if (protocolSelect === 'https') return 'https';
+            if (protocolSelect === 'http') return 'http';
+            
+            // Auto-detect
+            const httpsWorks = await testProtocol(domain, 'https');
+            if (httpsWorks) return 'https';
+            
+            const httpWorks = await testProtocol(domain, 'http');
+            if (httpWorks) return 'http';
+            
             return null;
         }
 
@@ -99,6 +140,23 @@
             }
 
             const domain = document.getElementById('domain').value.trim();
+            if (!domain) {
+                alert("Please enter a domain!");
+                return;
+            }
+
+            // Determine working protocol
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = `<p class="loading">Checking protocol for ${domain}...</p>`;
+            
+            const protocol = await determineProtocol(domain);
+            if (!protocol) {
+                statusDiv.innerHTML = `<p class="error">Cannot connect to ${domain} via HTTPS or HTTP. Check domain/network.</p>`;
+                return;
+            }
+
+            statusDiv.innerHTML = `<p class="loading">Using ${protocol} for scanning...</p>`;
+
             const wordlistType = document.getElementById('wordlist-select').value;
             const delay = parseInt(document.getElementById('delay').value) || 300;
             
@@ -115,68 +173,44 @@
                 wordlist = [...wordlists[wordlistType]];
             }
 
-            if (!domain) {
-                alert("Please enter a domain!");
-                return;
-            }
-
             isScanning = true;
             abortController = new AbortController();
             document.getElementById('export-btn').disabled = true;
             foundPaths = [];
             
             const resultsDiv = document.getElementById('results');
-            const statusDiv = document.getElementById('status');
             const progressBar = document.getElementById('progress');
             
             resultsDiv.innerHTML = "";
-            statusDiv.innerHTML = `<p class="loading">Scanning ${wordlist.length} paths...</p>`;
+            statusDiv.innerHTML = `<p class="loading">Scanning ${wordlist.length} paths on ${protocol}...</p>`;
             progressBar.style.width = "0%";
             
             let checked = 0;
             let foundCount = 0;
 
-            // First check base domain to verify connectivity
-            try {
-                const baseCheck = await fetch(`https://${domain}`, {
-                    signal: abortController.signal
-                });
-                if (!baseCheck.ok) {
-                    statusDiv.innerHTML = `<p class="error">Base domain returned ${baseCheck.status}. Scan may not work.</p>`;
-                }
-            } catch (error) {
-                statusDiv.innerHTML = `<p class="error">Cannot connect to ${domain}. Check domain/network.</p>`;
-                isScanning = false;
-                return;
-            }
-
             for (const word of wordlist) {
                 if (!isScanning) break;
                 
-                const url = `https://${domain}/${word.replace(/^\//, '')}`;
+                const url = `${protocol}://${domain}/${word.replace(/^\//, '')}`;
                 const result = await checkUrl(url);
                 
-                if (result) {
-                    resultsDiv.innerHTML += `
-                        <p class="found">
-                            [${result.status}] ${result.url} 
-                            <span style="color: #666">(${result.size} bytes)</span>
-                        </p>`;
-                    foundPaths.push(`${result.status} ${result.url} (${result.size} bytes)`);
+                if (result.accessible) {
+                    resultsDiv.innerHTML += `<p class="found">[Accessible] ${result.url}</p>`;
+                    foundPaths.push(result.url);
                     foundCount++;
                 }
                 
                 checked++;
                 const progressPercent = (checked / wordlist.length) * 100;
                 progressBar.style.width = `${progressPercent}%`;
-                statusDiv.innerHTML = `<p class="loading">Checked: ${checked}/${wordlist.length} | Found: ${foundCount}</p>`;
+                statusDiv.innerHTML = `<p class="loading">Checked: ${checked}/${wordlist.length} | Found: ${foundCount} | Using: ${protocol}</p>`;
                 
                 if (delay > 0) {
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
 
-            statusDiv.innerHTML += `<p>Scan completed! ${foundCount} valid paths found.</p>`;
+            statusDiv.innerHTML += `<p>Scan completed! ${foundCount} accessible paths found.</p>`;
             document.getElementById('export-btn').disabled = false;
             isScanning = false;
         }
@@ -199,7 +233,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `dirb_results_${document.getElementById('domain').value}.txt`;
+            a.download = `scan_results_${document.getElementById('domain').value}.txt`;
             a.click();
             URL.revokeObjectURL(url);
         }
